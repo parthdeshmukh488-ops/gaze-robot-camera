@@ -75,7 +75,10 @@ cursor unusable. During a saccade you want almost none; lag shows up directly
 as the cursor trailing the eye. A fixed low-pass has to pick one and live with
 it.
 
-`python examples/02_filter_tradeoff.py`:
+![One Euro against a fixed low-pass](docs/figures/01_filters.png)
+
+The blue trace sits on the true gaze through every saccade; the orange one is
+still climbing half a second later. Measured, `python examples/02_filter_tradeoff.py`:
 
 | filter | jitter (deg) | settling (samples) |
 |---|---:|---:|
@@ -94,9 +97,11 @@ Looking is not choosing — the eye is a perceptual organ, and a system that
 treats a glance as a click fires selections the user never intended. This is
 the Midas touch problem, and no dwell implementation escapes it.
 
-`python examples/03_technique_comparison.py` replays one scripted session,
-containing both deliberate selections and stretches of *reading*, through both
-techniques:
+![Dwell fires while the user is only reading](docs/figures/02_selection.png)
+
+Every red cross falls inside a span where the scripted user was *reading*, not
+choosing. `python examples/03_technique_comparison.py` replays that one session
+through both techniques:
 
 | technique | fired | correct | unintended | missed |
 |---|---:|---:|---:|---:|
@@ -113,6 +118,8 @@ that by needing a hand.
 ---
 
 ## The safety layer
+
+![The safety layer against a hostile gaze signal](docs/figures/03_safety.png)
 
 Three independent gates between the tracker and the robot, each sufficient on
 its own:
@@ -140,10 +147,11 @@ the user was looking. There is a test for exactly this.
 python examples/01_calibration_accuracy.py
 python examples/02_filter_tradeoff.py
 python examples/03_technique_comparison.py
+python examples/make_figures.py          # redraws docs/figures/
 ```
 
-All three are seeded and run in CI, which is what stops the tables above
-drifting away from what the code does.
+All of them are seeded, and the first three run in CI, which is what stops
+the tables above drifting away from what the code does.
 
 **These are simulations, not measurements of a real tracker.** The eye in
 example 1 is synthetic and the user in example 3 is scripted. They demonstrate
@@ -163,11 +171,17 @@ mouse baseline — using SUS and NASA-TLX.
 - **The screen geometry assumes the eye sits on the normal through the screen
   centre.** A user sitting well off to one side breaks that assumption, and
   nothing detects it.
-- **ρ, the head-pose interaction, is learned rather than modelled.** Head
+- **The head-pose interaction is learned, not modelled.** Head
   angles go into the polynomial fit as features. This works within the range
   covered by calibration and degrades outside it, with no warning.
 - **No smooth-pursuit handling.** I-VT classifies pursuit as a long saccade,
   so tracking a moving object looks like noise to the fixation detector.
+
+  ![I-VT never interpolates across a dropout](docs/figures/04_fixations.png)
+
+  What it does do correctly is refuse to merge across a tracking dropout: the
+  fixation either side of the blink is reported as two, because where the eye
+  went during the blink is unknown.
 - **Dwell and look-and-confirm only.** The mouse baseline from the study
   protocol is not implemented here; it needs no gaze machinery.
 
