@@ -14,6 +14,8 @@ techniques do to a given trace; it says nothing about what people prefer, which
 is what the questionnaires in `gazectl.study` are for.
 """
 
+from dataclasses import dataclass
+
 import numpy as np
 
 from gazectl.selection import (
@@ -52,27 +54,42 @@ SCRIPT = [
 CONFIRM_DELAY_S = 0.25  # how long after arriving the user presses the key
 
 
+@dataclass(frozen=True)
+class Span:
+    """One scripted segment of the session."""
+
+    target_id: str | None
+    intended: bool
+    start: float
+    end: float
+
+    def contains(self, t: float) -> bool:
+        return self.start <= t < self.end
+
+
 def build_session(rng):
-    """Expand the script into a noisy per-sample gaze trace."""
-    points, times, intents = [], [], []
+    """Expand the script into a noisy per-sample gaze trace.
+
+    Returns the spans as well as the samples. Scoring needs to know *when*
+    each scripted segment ran, not just which targets were wanted.
+    """
+    points, times, intents, spans = [], [], [], []
     t = 0.0
 
     for target_id, duration, intended in SCRIPT:
         centre = (
             next(x for x in TARGETS if x.id == target_id).centre_px if target_id else ELSEWHERE
         )
+        start = t
         n = int(duration * RATE_HZ)
         for _ in range(n):
             points.append(centre + rng.normal(0.0, NOISE_PX, size=2))
             times.append(t)
             intents.append((target_id, intended))
             t += 1.0 / RATE_HZ
+        spans.append(Span(target_id, intended, start, t))
 
-    return np.array(points), np.array(times), intents
-
-
-def intended_selections():
-    return [target_id for target_id, _, intended in SCRIPT if intended]
+    return np.array(points), np.array(times), intents, spans
 
 
 def run_dwell(points, times, dwell_s):
@@ -114,33 +131,57 @@ def run_look_and_confirm(points, times, intents):
     return fired
 
 
-def score(fired, wanted):
-    """Count how the fired selections line up with what the user intended.
+def classify(fired, spans):
+    """Label each fired selection by the span it landed in.
 
-    Matching is by identity and order, which is the right notion here because
-    the script never asks for the same target twice in a row.
+    Matching on target id alone is not good enough, and gets the attribution
+    exactly backwards: a dwell that fires while the user is merely *reading*
+    "left" would be matched against the later span where they genuinely wanted
+    "left", scored as correct, and the real one then scored as a false
+    positive. The totals happen to come out the same; the story they tell does
+    not.
+
+    A selection is correct when it fires inside a span that was intended, and
+    names that span's target.
     """
-    fired_ids = [target_id for target_id, _ in fired]
+    labelled = []
+    satisfied = set()
 
-    remaining = list(wanted)
-    correct = 0
-    for target_id in fired_ids:
-        if target_id in remaining:
-            remaining.remove(target_id)
-            correct += 1
+    for target_id, when in fired:
+        span = next((s for s in spans if s.contains(when)), None)
+        correct = (
+            span is not None
+            and span.intended
+            and span.target_id == target_id
+            and span.start not in satisfied
+        )
+        if correct:
+            satisfied.add(span.start)
+        labelled.append((target_id, when, correct))
+
+    wanted = [s for s in spans if s.intended]
+    missed = sum(1 for s in wanted if s.start not in satisfied)
+
+    return labelled, missed
+
+
+def score(fired, spans):
+    """Summary counts for one technique."""
+    labelled, missed = classify(fired, spans)
+    correct = sum(1 for _, _, ok in labelled if ok)
 
     return {
-        "fired": len(fired_ids),
+        "fired": len(labelled),
         "correct": correct,
-        "unintended": len(fired_ids) - correct,
-        "missed": len(remaining),
+        "unintended": len(labelled) - correct,
+        "missed": missed,
     }
 
 
 def main() -> None:
     rng = np.random.default_rng(SEED)
-    points, times, intents = build_session(rng)
-    wanted = intended_selections()
+    points, times, intents, spans = build_session(rng)
+    wanted = [s.target_id for s in spans if s.intended]
 
     print("Scripted session: three intended selections, two stretches of reading")
     print(f"  duration               {times[-1]:.1f} s")
@@ -151,13 +192,13 @@ def main() -> None:
     print("-" * 74)
 
     for dwell_s in (0.5, 0.8, 1.2):
-        result = score(run_dwell(points, times, dwell_s), wanted)
+        result = score(run_dwell(points, times, dwell_s), spans)
         print(
             f"{'dwell ' + format(dwell_s, '.1f') + ' s':<34} {result['fired']:>7} "
             f"{result['correct']:>9} {result['unintended']:>12} {result['missed']:>8}"
         )
 
-    result = score(run_look_and_confirm(points, times, intents), wanted)
+    result = score(run_look_and_confirm(points, times, intents), spans)
     print(
         f"{'look-and-confirm':<34} {result['fired']:>7} "
         f"{result['correct']:>9} {result['unintended']:>12} {result['missed']:>8}"
